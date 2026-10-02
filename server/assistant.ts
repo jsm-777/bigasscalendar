@@ -67,8 +67,11 @@ export async function draftPlan(db: DB, userId: string, message: string, history
   ].join('\n');
 
   const client = new Anthropic();
-  const response = await client.messages.create({
+  // Server-side refusal fallback: if the model declines, the API retries on a fallback model.
+  const response = await client.beta.messages.create({
     model: process.env.ANTHROPIC_MODEL || 'claude-opus-5-5',
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
     max_tokens: 16000,
     output_config: { effort: 'medium' },
     system: SYSTEM,
@@ -78,7 +81,7 @@ export async function draftPlan(db: DB, userId: string, message: string, history
       ...history.slice(-8),
       { role: 'user', content: message },
     ],
-  } as Anthropic.MessageCreateParamsNonStreaming);
+  } as Anthropic.Beta.MessageCreateParamsNonStreaming);
 
   if (response.stop_reason === 'refusal') throw new Error('The assistant declined this request.');
   const text = response.content.map((b) => (b.type === 'text' ? b.text : '')).join('').trim();

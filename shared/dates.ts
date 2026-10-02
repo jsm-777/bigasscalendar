@@ -162,3 +162,9 @@ export function yearRange(startMonth: string): { from: ISODate; to: ISODate; mon
   const to = endOfMonth(`${months[11]}-01`);
   return { from, to, months };
 }
+
+/** Convert a wall-clock time between zones (identity when equal). */
+export function convertLocal(local: LocalDateTime, fromTz: string, toTz: string): LocalDateTime {
+  if (fromTz === toTz) return local;
+  return instantToLocal(localToInstant(local, fromTz), toTz);
+}
