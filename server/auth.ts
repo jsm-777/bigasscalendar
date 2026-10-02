@@ -25,10 +25,10 @@ export async function verifyPassword(pw: string, stored: string): Promise<boolea
 export const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 export const randomToken = () => randomBytes(32).toString('base64url');
 
-export function createSession(db: DB, res: Response, userId: string) {
+export async function createSession(db: DB, res: Response, userId: string) {
   const token = randomToken();
   const expires = new Date(Date.now() + SESSION_DAYS * 86400_000);
-  run(db, 'INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)', sha256(token), userId, nowIso(), expires.toISOString());
+  await run(db, 'INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)', sha256(token), userId, nowIso(), expires.toISOString());
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
@@ -38,9 +38,9 @@ export function createSession(db: DB, res: Response, userId: string) {
   });
 }
 
-export function destroySession(db: DB, req: Request, res: Response) {
+export async function destroySession(db: DB, req: Request, res: Response) {
   const token = readCookie(req, SESSION_COOKIE);
-  if (token) run(db, 'DELETE FROM sessions WHERE token_hash = ?', sha256(token));
+  if (token) await run(db, 'DELETE FROM sessions WHERE token_hash = ?', sha256(token));
   res.clearCookie(SESSION_COOKIE, { path: '/' });
 }
 
@@ -60,14 +60,16 @@ declare module 'express-serve-static-core' {
   }
 }
 
-export function sessionMiddleware(db: DB) {
+export function sessionMiddleware(getDb: () => DB) {
   return (req: Request, _res: Response, next: NextFunction) => {
     const token = readCookie(req, SESSION_COOKIE);
-    if (token) {
-      const s = get<{ user_id: string; expires_at: string }>(db, 'SELECT user_id, expires_at FROM sessions WHERE token_hash = ?', sha256(token));
-      if (s && s.expires_at > nowIso()) req.userId = s.user_id;
-    }
-    next();
+    if (!token) return next();
+    get<{ user_id: string; expires_at: string }>(getDb(), 'SELECT user_id, expires_at FROM sessions WHERE token_hash = ?', sha256(token))
+      .then((s) => {
+        if (s && s.expires_at > nowIso()) req.userId = s.user_id;
+        next();
+      })
+      .catch(next);
   };
 }
 

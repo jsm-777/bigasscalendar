@@ -13,8 +13,8 @@ See **[STATUS.md](STATUS.md)** for the requirements checklist (implemented / par
 | Part | Choice | License |
 | --- | --- | --- |
 | UI | React 19 + TypeScript, Vite; custom accessible CSS-grid year board and time grid | MIT |
-| Server | Node 22 + Express 5, run with `tsx` | MIT |
-| Database | SQLite through Node's built-in `node:sqlite` (WAL), SQL migrations in `server/migrations` | Public domain |
+| Server | Node 22 + Express 5 — runs as one Vercel function in production, or with `tsx` locally | MIT |
+| Database | PostgreSQL: **Supabase** in production (`postgres` driver); embedded **PGlite** locally and in tests. Migrations in `server/migrations` | Unlicense / Apache-2.0 |
 | Dates & zones | Luxon (IANA zones, DST-aware) + small date-only helpers | MIT |
 | Recurrence | Own RRULE subset (`shared/recurrence.ts`), expanded on local dates | — |
 | Moon | astronomy-engine | MIT |
@@ -26,7 +26,7 @@ See **[STATUS.md](STATUS.md)** for the requirements checklist (implemented / par
 
 ## Local setup
 
-Requirements: Node.js **22.13+** (for `node:sqlite`).
+Requirements: Node.js **22+**. No database install is needed: with `DATABASE_URL` empty, the server uses an embedded Postgres (PGlite) stored in `./data/pglite`. To develop against Supabase instead, put its connection string in `DATABASE_URL`.
 
 ```bash
 npm install
@@ -43,9 +43,33 @@ npm run build
 npm start                   # serves dist/ and the API on PORT (default 8787)
 ```
 
-Other scripts: `npm test` (Vitest), `npm run typecheck`, `npm run migrate`, `npm run vapid`.
+Other scripts: `npm test` (Vitest), `npm run typecheck`, `npm run migrate`, `npm run vapid`, `npm run build:vercel`.
 
-The database file defaults to `./data/bigasscalendar.db` and is git-ignored. Migrations run automatically on start.
+Migrations run automatically when the server starts (guarded by a Postgres advisory lock, so concurrent cold starts are safe).
+
+## Deploying to Vercel + Supabase
+
+`vercel.json` makes Vercel run `npm run build:vercel`. That script uses Vercel's Build Output API to publish three things:
+- the site from `dist/`
+- the whole API bundled into one Node function at `/api`, with every `/api/*` request routed to it
+- a cron job for reminders
+
+1. **Supabase.** Project → **Connect** → copy the **Transaction pooler** connection string (port `6543`) and fill in your database password.
+   - The app creates its own tables on first request. Every table has row-level security switched on with no access rules, so Supabase's public Data API (anon/authenticated keys) can't read anything. Only this server, connecting as the table owner, can.
+   - The app uses its own login, not Supabase Auth.
+2. **Vercel → Settings → Environment Variables** (Production):
+   - `DATABASE_URL`: the pooler URI from step 1. If you installed the Supabase ↔ Vercel integration instead, its `POSTGRES_URL` also works.
+   - `CRON_SECRET`: any long random string. Vercel sends it to `/api/cron` automatically.
+   - `APP_ORIGIN`: your site URL, e.g. `https://bigasscalendar.vercel.app`.
+   - `ALLOW_OPEN_SIGNUP=true` for your first sign-up, then change it to `false` and redeploy.
+   - Optional: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`, `ANTHROPIC_API_KEY`, `CRON_SCHEDULE`.
+3. **Settings → Build & Development.** Leave the Framework Preset on *Other*, or let `vercel.json` override it. Don't set an Output Directory. Then redeploy.
+
+**Reminder timing on Vercel.** Background delivery runs whenever `/api/cron` is called:
+- **Vercel Hobby** allows cron jobs **once a day** only. That covers housekeeping, not timely push.
+  - While the app is open, its 30-second polling delivers due reminders, so in-app cues stay on time.
+  - For timely push with the app closed, either upgrade to Pro and set `CRON_SCHEDULE="* * * * *"`, or point a free external scheduler (e.g. cron-job.org) at `https://<your-app>/api/cron` every minute, with the header `Authorization: Bearer <CRON_SECRET>`.
+- **Vercel Pro:** set `CRON_SCHEDULE="* * * * *"` and redeploy.
 
 ## Inviting Tehron (Together view)
 
@@ -64,7 +88,9 @@ Notes, to-dos, goals and reminders are never shared, and a partner's events neve
   - A job that is past its expiry is marked *expired* and not delivered, so a late scheduler never sends a pile of stale alerts.
   - Push failures caused by network errors, 429 or 5xx are retried with backoff, up to 3 attempts.
   - A 404 or 410 response deletes that subscription, because the device revoked it or it went stale.
-- **Durability.** Jobs live in SQLite, so a restart picks up where it stopped. Delivery does not depend on any page being open, but it does need the **server process to be running**. If you deploy to a platform that sleeps idle processes, use an always-on instance.
+- **Durability.** Jobs live in Postgres, so nothing is lost between runs.
+  - Delivery runs from `/api/cron` on Vercel, from in-app polling while the app is open, and from a 15-second timer when you run `npm start` or `npm run dev`.
+  - Jobs and deliveries are claimed atomically, so overlapping runs never send the same push twice.
 - **Quiet hours.** Reminders still reach the in-app center during quiet hours, but no push is sent.
 - **Duplicates.** By default push goes only to the most recently enabled device. You can choose every device instead.
 - **Privacy.** Lock-screen text hides titles unless you turn that on.
@@ -112,7 +138,7 @@ What has and hasn't been verified:
 - `tests/dates.test.ts`: board range, weekdays, leap years, DST gap/overlap, local "today".
 - `tests/recurrence.test.ts`: expansion rules and this / following / all edits with exceptions.
 - `tests/moon-streaks.test.ts`: moon quarter instants checked against USNO reference times (±3 min), streak rules, stable daily affirmation.
-- `tests/server.test.ts`: in-memory database, never your real data file. Covers:
+- `tests/server.test.ts`: runs on an in-memory Postgres (PGlite), never your real database. Covers:
   - blank accounts, invitation-only signup and CSRF header
   - private / free-busy / details / edit enforcement, notes never shared, stale-version rejection
   - reminder scheduling, rescheduling and cancellation; recurring occurrences

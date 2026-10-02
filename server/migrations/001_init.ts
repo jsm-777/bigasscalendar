@@ -1,14 +1,26 @@
--- Big Ass Calendar initial schema (SQLite). Times: *_at columns are UTC ISO strings;
--- *_date columns are local calendar dates; *_local columns are wall-clock times in `tz`.
+// Big Ass Calendar initial schema (PostgreSQL / Supabase).
+// Times: *_at columns are UTC ISO-8601 strings; *_date columns are local calendar dates
+// (YYYY-MM-DD); *_local columns are wall-clock times in the row's IANA `tz`.
+// Every table has row-level security enabled with no policies: Supabase's public Data API
+// (anon/authenticated roles) can read nothing. Only the server's own database role, which owns
+// the tables, can access them.
 
+const TABLES = [
+  'users', 'sessions', 'partnerships', 'invitations', 'calendars', 'calendar_visibility', 'task_lists', 'goals',
+  'tasks', 'events', 'event_exceptions', 'notes', 'check_ins', 'notification_prefs', 'push_subscriptions',
+  'notification_jobs', 'inapp_notifications', 'notification_deliveries', 'plan_proposals', 'user_settings',
+];
+
+export default `
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
-  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  email TEXT NOT NULL,
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   tz TEXT NOT NULL DEFAULT 'America/Los_Angeles',
   created_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX users_email ON users (lower(email));
 
 CREATE TABLE sessions (
   token_hash TEXT PRIMARY KEY,
@@ -18,7 +30,6 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_user ON sessions(user_id);
 
--- Two people who have connected through an accepted invitation (WorkspaceMembership).
 CREATE TABLE partnerships (
   user_a TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   user_b TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -44,7 +55,6 @@ CREATE TABLE calendars (
   name TEXT NOT NULL,
   color TEXT NOT NULL,
   archived INTEGER NOT NULL DEFAULT 0,
-  -- CalendarPermission for the owner's partner: private | freebusy | details | edit
   share_level TEXT NOT NULL DEFAULT 'private',
   sort INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL DEFAULT 1,
@@ -52,7 +62,6 @@ CREATE TABLE calendars (
 );
 CREATE INDEX calendars_owner ON calendars(owner_id);
 
--- Per-viewer visibility, independent of ownership and sharing.
 CREATE TABLE calendar_visibility (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   calendar_id TEXT NOT NULL REFERENCES calendars(id) ON DELETE CASCADE,
@@ -117,7 +126,6 @@ CREATE TABLE events (
   notes TEXT NOT NULL DEFAULT '',
   recurrence TEXT,
   alerts TEXT NOT NULL DEFAULT '[]',
-  -- TaskTimeBlockLink: a time block scheduled for a task.
   task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
   goal_id TEXT REFERENCES goals(id) ON DELETE SET NULL,
   version INTEGER NOT NULL DEFAULT 1,
@@ -138,7 +146,7 @@ CREATE TABLE event_exceptions (
 CREATE TABLE notes (
   id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  scope TEXT NOT NULL, -- day | month | loose
+  scope TEXT NOT NULL,
   key TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL DEFAULT '',
@@ -153,7 +161,7 @@ CREATE TABLE check_ins (
   goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
   owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   date TEXT NOT NULL,
-  quantity REAL,
+  quantity DOUBLE PRECISION,
   reflection TEXT NOT NULL DEFAULT '',
   client_key TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -177,17 +185,16 @@ CREATE TABLE push_subscriptions (
   last_error TEXT
 );
 
--- Durable notification jobs. dedupe_key makes planning idempotent.
 CREATE TABLE notification_jobs (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL, -- event | task | agenda | snooze | test
+  kind TEXT NOT NULL,
   source_type TEXT,
   source_id TEXT,
   dedupe_key TEXT NOT NULL,
   fire_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
-  status TEXT NOT NULL, -- pending | sent | cancelled | expired
+  status TEXT NOT NULL,
   payload TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -211,7 +218,7 @@ CREATE TABLE notification_deliveries (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL REFERENCES notification_jobs(id) ON DELETE CASCADE,
   subscription_id TEXT NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE,
-  status TEXT NOT NULL, -- pending | sent | failed | suppressed
+  status TEXT NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT,
   error TEXT,
@@ -222,16 +229,18 @@ CREATE TABLE notification_deliveries (
 CREATE TABLE plan_proposals (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  source TEXT NOT NULL, -- import | assistant
+  source TEXT NOT NULL,
   plan TEXT NOT NULL,
-  status TEXT NOT NULL, -- applied | undone
+  status TEXT NOT NULL,
   undo TEXT,
   created_at TEXT NOT NULL,
   applied_at TEXT
 );
 
--- Free-form per-user settings (planning constraints, display options).
 CREATE TABLE user_settings (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   settings TEXT NOT NULL
 );
+
+${TABLES.map((t) => `ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY;`).join('\n')}
+`;

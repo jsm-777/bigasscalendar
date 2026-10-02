@@ -41,6 +41,10 @@ export function Root() {
         <div className="card">
           <h1 className="brand">Big Ass Calendar</h1>
           <p className="error-text">Could not reach the server: {error}</p>
+          {/404/.test(error) && (
+            <p className="hint">The site loaded but its API did not respond. On Vercel, check that the project uses this repo's <code>vercel.json</code> (build command <code>npm run build:vercel</code>) and that <code>DATABASE_URL</code> is set.</p>
+          )}
+          {/50\d/.test(error) && <p className="hint">The API is running but failed to start. Check the database settings (DATABASE_URL) in your hosting provider.</p>}
           <button className="btn" onClick={() => location.reload()}>Try again</button>
         </div>
       </div>

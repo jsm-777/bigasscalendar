@@ -9,7 +9,7 @@ import type { CalEvent } from '../shared/types.ts';
 
 // Integration tests run against an in-memory database; nothing touches the real data file.
 process.env.ALLOW_OPEN_SIGNUP = 'true';
-const db = openDb(':memory:');
+let db: Awaited<ReturnType<typeof openDb>>;
 let server: Server;
 let base = '';
 
@@ -46,12 +46,16 @@ function ev(over: Partial<CalEvent>): CalEvent {
 }
 
 beforeAll(async () => {
-  server = createApp(db).listen(0);
+  db = await openDb({ memory: true });
+  server = createApp(async () => db).listen(0);
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   expect((await jasmin.req('POST', '/api/auth/signup', { email: 'j@example.test', password: 'correct horse battery', displayName: 'Jasmin', tz: TZ })).status).toBe(200);
   jasminId = (await jasmin.req('GET', '/api/me')).body.user.id;
 });
-afterAll(() => server.close());
+afterAll(async () => {
+  server.close();
+  await db.close?.();
+});
 
 describe('accounts', () => {
   it('a fresh account has zero personal records', async () => {
@@ -127,19 +131,19 @@ describe('sharing permissions', () => {
     const priv = body.events.find((x: CalEvent) => x.title === 'secret private');
     const res = await tehron.req('POST', '/api/plan/apply', { plan: { version: 1, operations: [{ op: 'delete_event', eventId: priv.id }] } });
     expect(res.status).toBe(400);
-    expect(get(db, 'SELECT 1 AS x FROM events WHERE id = ?', priv.id)).toBeTruthy();
+    expect(await get(db, 'SELECT 1 AS x FROM events WHERE id = ?', priv.id)).toBeTruthy();
   });
 
-  it('partner reminders are never planned for the other person', () => {
-    run(db, 'INSERT OR REPLACE INTO notification_prefs (user_id, prefs) VALUES (?, ?)', tehronId, JSON.stringify({ enabled: true }));
-    reconcileUser(db, tehronId);
-    expect(all(db, "SELECT * FROM notification_jobs WHERE user_id = ? AND status = 'pending'", tehronId)).toEqual([]);
+  it('partner reminders are never planned for the other person', async () => {
+    await run(db, 'INSERT INTO notification_prefs (user_id, prefs) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET prefs = excluded.prefs', tehronId, JSON.stringify({ enabled: true }));
+    await reconcileUser(db, tehronId);
+    expect(await all(db, "SELECT * FROM notification_jobs WHERE user_id = ? AND status = 'pending'", tehronId)).toEqual([]);
   });
 });
 
 describe('reminders', () => {
   let calId = '';
-  const pending = () => all<{ dedupe_key: string; fire_at: string; kind: string }>(db, "SELECT dedupe_key, fire_at, kind FROM notification_jobs WHERE user_id = ? AND status = 'pending' AND kind IN ('event','task')", jasminId);
+  const pending = async () => all<{ dedupe_key: string; fire_at: string; kind: string }>(db, "SELECT dedupe_key, fire_at, kind FROM notification_jobs WHERE user_id = ? AND status = 'pending' AND kind IN ('event','task')", jasminId);
 
   beforeAll(async () => {
     calId = crypto.randomUUID();
@@ -153,30 +157,30 @@ describe('reminders', () => {
   it('schedules, reschedules and cancels event reminders', async () => {
     const e = ev({ calendarId: calId, title: 'Dentist', alerts: [{ minutesBefore: 30 }] });
     const created = (await jasmin.req('POST', '/api/events/batch', { upserts: [e], deletes: [] })).body.events[0];
-    let jobs = pending().filter((j) => j.dedupe_key.includes(e.id));
+    let jobs = (await pending()).filter((j) => j.dedupe_key.includes(e.id));
     expect(jobs).toHaveLength(1);
     const firstKey = jobs[0].dedupe_key;
     // re-planning an unchanged event is a no-op (no duplicates)
-    reconcileUser(db, jasminId);
-    expect(pending().filter((j) => j.dedupe_key.includes(e.id))).toHaveLength(1);
+    await reconcileUser(db, jasminId);
+    expect((await pending()).filter((j) => j.dedupe_key.includes(e.id))).toHaveLength(1);
     // move an hour later → old job cancelled, new job pending
     const moved = (await jasmin.req('POST', '/api/events/batch', { upserts: [{ ...created, startLocal: `${tomorrow}T11:00`, endLocal: `${tomorrow}T12:00` }], deletes: [] })).body.events[0];
-    jobs = pending().filter((j) => j.dedupe_key.includes(e.id));
+    jobs = (await pending()).filter((j) => j.dedupe_key.includes(e.id));
     expect(jobs).toHaveLength(1);
     expect(jobs[0].dedupe_key).not.toBe(firstKey);
-    expect(get<{ status: string }>(db, 'SELECT status FROM notification_jobs WHERE dedupe_key = ?', firstKey)!.status).toBe('cancelled');
+    expect((await get<{ status: string }>(db, 'SELECT status FROM notification_jobs WHERE dedupe_key = ?', firstKey))!.status).toBe('cancelled');
     // delete → cancelled
     await jasmin.req('POST', '/api/events/batch', { upserts: [], deletes: [{ id: e.id, version: moved.version }] });
-    expect(pending().filter((j) => j.dedupe_key.includes(e.id))).toHaveLength(0);
+    expect((await pending()).filter((j) => j.dedupe_key.includes(e.id))).toHaveLength(0);
   });
 
   it('recurring occurrences each get a job; cancelling one occurrence removes only its job', async () => {
     const e = ev({ calendarId: calId, title: 'Standup', alerts: [{ minutesBefore: 5 }], recurrence: { freq: 'daily', interval: 1, count: 3 } });
     const saved = (await jasmin.req('POST', '/api/events/batch', { upserts: [e], deletes: [] })).body.events[0];
-    expect(pending().filter((j) => j.dedupe_key.includes(e.id))).toHaveLength(3);
+    expect((await pending()).filter((j) => j.dedupe_key.includes(e.id))).toHaveLength(3);
     const second = addDays(tomorrow, 1);
     await jasmin.req('POST', '/api/events/batch', { upserts: [{ ...saved, exceptions: [{ originalDate: second, cancelled: true, override: null }] }], deletes: [] });
-    const keys = pending().filter((j) => j.dedupe_key.includes(e.id)).map((j) => j.dedupe_key);
+    const keys = (await pending()).filter((j) => j.dedupe_key.includes(e.id)).map((j) => j.dedupe_key);
     expect(keys).toHaveLength(2);
     expect(keys.some((k) => k.includes(`:${second}:`))).toBe(false);
   });
@@ -188,20 +192,20 @@ describe('reminders', () => {
     const id = crypto.randomUUID();
     let t = { id, listId: lists[0].id, title: 'Pay bill', notes: '', priority: 2, dueDate: tomorrow, dueTime: null, tz: TZ, recurrence: null, completedAt: null, alerts: [{ minutesBefore: 0 }], goalId, version: 0 };
     t = (await jasmin.req('PUT', `/api/tasks/${id}`, t)).body.task;
-    expect(pending().filter((j) => j.dedupe_key.startsWith(`task:${id}`))).toHaveLength(1);
+    expect((await pending()).filter((j) => j.dedupe_key.startsWith(`task:${id}`))).toHaveLength(1);
     // date-only task fires at the configured default time (09:00 local)
-    const fire = pending().find((j) => j.dedupe_key.startsWith(`task:${id}`))!.fire_at;
+    const fire = (await pending()).find((j) => j.dedupe_key.startsWith(`task:${id}`))!.fire_at;
     expect(new Date(fire).toLocaleTimeString('en-US', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false })).toBe('09:00');
 
     const done = await jasmin.req('PUT', `/api/tasks/${id}`, { ...t, completedAt: new Date().toISOString() });
-    expect(pending().filter((j) => j.dedupe_key.startsWith(`task:${id}`))).toHaveLength(0);
+    expect((await pending()).filter((j) => j.dedupe_key.startsWith(`task:${id}`))).toHaveLength(0);
     expect(done.body.checkIns.filter((c: { goalId: string }) => c.goalId === goalId)).toHaveLength(1);
     // submitting the same completed state again does not double count
     const again = await jasmin.req('PUT', `/api/tasks/${id}`, { ...done.body.task, notes: 'paid' });
     expect(again.body.checkIns.filter((c: { goalId: string }) => c.goalId === goalId)).toHaveLength(1);
     const reopened = await jasmin.req('PUT', `/api/tasks/${id}`, { ...again.body.task, completedAt: null });
     expect(reopened.body.checkIns.filter((c: { goalId: string }) => c.goalId === goalId)).toHaveLength(0);
-    expect(pending().filter((j) => j.dedupe_key.startsWith(`task:${id}`))).toHaveLength(1);
+    expect((await pending()).filter((j) => j.dedupe_key.startsWith(`task:${id}`))).toHaveLength(1);
   });
 
   it('check-ins are idempotent by client key', async () => {
@@ -225,9 +229,9 @@ describe('delivery', () => {
     sent.push(`${sub.endpoint} ${payload}`);
     return { statusCode: 201 };
   };
-  const job = (fireAt: Date, expiresAt: Date, key: string) => {
+  const job = async (fireAt: Date, expiresAt: Date, key: string) => {
     const id = crypto.randomUUID();
-    run(db, `INSERT INTO notification_jobs (id, user_id, kind, dedupe_key, fire_at, expires_at, status, payload, created_at, updated_at)
+    await run(db, `INSERT INTO notification_jobs (id, user_id, kind, dedupe_key, fire_at, expires_at, status, payload, created_at, updated_at)
       VALUES (?,?,?,?,?,?,'pending',?,?,?)`, id, tehronId, 'event', key, fireAt.toISOString(), expiresAt.toISOString(),
       JSON.stringify({ title: 'Private title', body: 'b', url: '/' }), new Date().toISOString(), new Date().toISOString());
     return id;
@@ -236,43 +240,43 @@ describe('delivery', () => {
   it('delivers once in-app and once per target push subscription, hiding titles by default', async () => {
     await tehron.req('POST', '/api/push/subscribe', { endpoint: 'https://push.example.test/a', keys: { p256dh: 'p', auth: 'a' } });
     const now = new Date();
-    const id = job(new Date(now.getTime() - 1000), new Date(now.getTime() + 600_000), 'd1');
+    const id = await job(new Date(now.getTime() - 1000), new Date(now.getTime() + 600_000), 'd1');
     await tick(db, sender, now);
     await tick(db, sender, now); // second tick must not duplicate
-    expect(all(db, 'SELECT * FROM inapp_notifications WHERE job_id = ?', id)).toHaveLength(1);
+    expect(await all(db, 'SELECT * FROM inapp_notifications WHERE job_id = ?', id)).toHaveLength(1);
     expect(sent).toHaveLength(1);
     expect(sent[0]).not.toContain('Private title');
   });
 
   it('drops stale jobs instead of flooding', async () => {
     const now = new Date();
-    const id = job(new Date(now.getTime() - 3600_000), new Date(now.getTime() - 60_000), 'd2');
+    const id = await job(new Date(now.getTime() - 3600_000), new Date(now.getTime() - 60_000), 'd2');
     await tick(db, sender, now);
-    expect(get<{ status: string }>(db, 'SELECT status FROM notification_jobs WHERE id = ?', id)!.status).toBe('expired');
-    expect(all(db, 'SELECT * FROM inapp_notifications WHERE job_id = ?', id)).toHaveLength(0);
+    expect((await get<{ status: string }>(db, 'SELECT status FROM notification_jobs WHERE id = ?', id))!.status).toBe('expired');
+    expect(await all(db, 'SELECT * FROM inapp_notifications WHERE job_id = ?', id)).toHaveLength(0);
   });
 
   it('suppresses push (not in-app) during quiet hours', async () => {
-    run(db, 'UPDATE notification_prefs SET prefs = ? WHERE user_id = ?', JSON.stringify({ enabled: true, quietStart: '00:00', quietEnd: '23:59' }), tehronId);
+    await run(db, 'UPDATE notification_prefs SET prefs = ? WHERE user_id = ?', JSON.stringify({ enabled: true, quietStart: '00:00', quietEnd: '23:59' }), tehronId);
     const now = new Date();
-    const id = job(new Date(now.getTime() - 1000), new Date(now.getTime() + 600_000), 'd3');
+    const id = await job(new Date(now.getTime() - 1000), new Date(now.getTime() + 600_000), 'd3');
     const before = sent.length;
     await tick(db, sender, now);
     expect(sent.length).toBe(before);
-    expect(all(db, 'SELECT * FROM inapp_notifications WHERE job_id = ?', id)).toHaveLength(1);
-    expect(get<{ status: string }>(db, 'SELECT status FROM notification_deliveries WHERE job_id = ?', id)!.status).toBe('suppressed');
-    run(db, 'UPDATE notification_prefs SET prefs = ? WHERE user_id = ?', JSON.stringify({ enabled: true }), tehronId);
+    expect(await all(db, 'SELECT * FROM inapp_notifications WHERE job_id = ?', id)).toHaveLength(1);
+    expect((await get<{ status: string }>(db, 'SELECT status FROM notification_deliveries WHERE job_id = ?', id))!.status).toBe('suppressed');
+    await run(db, 'UPDATE notification_prefs SET prefs = ? WHERE user_id = ?', JSON.stringify({ enabled: true }), tehronId);
   });
 
   it('retries transient failures a bounded number of times', async () => {
     mode = 'error';
     let now = new Date();
-    const id = job(new Date(now.getTime() - 1000), new Date(now.getTime() + 3 * 3600_000), 'd4');
+    const id = await job(new Date(now.getTime() - 1000), new Date(now.getTime() + 3 * 3600_000), 'd4');
     for (let i = 0; i < 6; i++) {
       await tick(db, sender, now);
       now = new Date(now.getTime() + 10 * 60_000);
     }
-    const d = get<{ status: string; attempts: number }>(db, 'SELECT status, attempts FROM notification_deliveries WHERE job_id = ?', id)!;
+    const d = (await get<{ status: string; attempts: number }>(db, 'SELECT status, attempts FROM notification_deliveries WHERE job_id = ?', id))!;
     expect(d.status).toBe('failed');
     expect(d.attempts).toBe(3);
   });
@@ -280,9 +284,9 @@ describe('delivery', () => {
   it('removes revoked subscriptions (410)', async () => {
     mode = 'gone';
     const now = new Date();
-    job(new Date(now.getTime() - 1000), new Date(now.getTime() + 600_000), 'd5');
+    await job(new Date(now.getTime() - 1000), new Date(now.getTime() + 600_000), 'd5');
     await tick(db, sender, now);
-    expect(all(db, 'SELECT * FROM push_subscriptions WHERE user_id = ?', tehronId)).toHaveLength(0);
+    expect(await all(db, 'SELECT * FROM push_subscriptions WHERE user_id = ?', tehronId)).toHaveLength(0);
   });
 });
 
@@ -291,15 +295,15 @@ describe('plans', () => {
     const calId = crypto.randomUUID();
     await jasmin.req('POST', '/api/calendars', { id: calId, name: 'Workouts', color: '#8b5cf6', archived: false, shareLevel: 'private', version: 0 });
     const plan = { version: 1, operations: [{ op: 'create_event', calendar: 'Workouts', title: 'Run', date: tomorrow, start: '06:00', end: '07:00' }] };
-    const count = () => get<{ n: number }>(db, "SELECT COUNT(*) AS n FROM events WHERE title = 'Run'")!.n;
+    const count = async () => (await get<{ n: number }>(db, "SELECT COUNT(*)::int AS n FROM events WHERE title = 'Run'"))!.n;
     const preview = await jasmin.req('POST', '/api/plan/preview', { plan });
     expect(preview.body.items[0].error).toBeNull();
-    expect(count()).toBe(0);
+    expect(await count()).toBe(0);
     const applied = await jasmin.req('POST', '/api/plan/apply', { plan });
-    expect(count()).toBe(1);
+    expect(await count()).toBe(1);
     const undo = await jasmin.req('POST', `/api/plan/${applied.body.proposalId}/undo`, {});
     expect(undo.body.conflicts).toEqual([]);
-    expect(count()).toBe(0);
+    expect(await count()).toBe(0);
   });
 
   it('undo leaves records edited afterwards alone', async () => {
@@ -309,7 +313,7 @@ describe('plans', () => {
     await jasmin.req('POST', '/api/events/batch', { upserts: [{ ...e, title: 'Swim (edited)' }], deletes: [] });
     const undo = await jasmin.req('POST', `/api/plan/${applied.body.proposalId}/undo`, {});
     expect(undo.body.conflicts).toHaveLength(1);
-    expect(get(db, "SELECT 1 AS x FROM events WHERE title = 'Swim (edited)'")).toBeTruthy();
+    expect(await get(db, "SELECT 1 AS x FROM events WHERE title = 'Swim (edited)'")).toBeTruthy();
   });
 
   it('rejects malformed plans', async () => {

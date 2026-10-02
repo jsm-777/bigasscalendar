@@ -39,23 +39,23 @@ function findOccurrence(ev: CalEvent, date: string | undefined): Occurrence {
   return occ;
 }
 
-export function compilePlan(db: DB, userId: string, plan: Plan): Compiled {
-  const me = userProfile(db, userId);
-  const calendars = listCalendars(db, userId).filter((c) => !c.archived);
-  const lists = listTaskLists(db, userId);
+export async function compilePlan(db: DB, userId: string, plan: Plan): Promise<Compiled> {
+  const me = await userProfile(db, userId);
+  const calendars = (await listCalendars(db, userId)).filter((c) => !c.archived);
+  const lists = await listTaskLists(db, userId);
   const items: PreviewItem[] = [];
   const changes: Change[] = [];
   // Working copies so several operations on the same record compose.
   const working = new Map<string, CalEvent | null>();
-  const loadEvent = (id: string): CalEvent => {
+  const loadEvent = async (id: string): Promise<CalEvent> => {
     if (working.has(id)) {
       const w = working.get(id);
       if (!w) throw new Error('Event was removed earlier in this plan');
       return w;
     }
-    const ev = getEvent(db, id);
+    const ev = await getEvent(db, id);
     if (!ev) throw new Error(`Event ${id} not found`);
-    const access = calendarAccess(db, userId, ev.calendarId);
+    const access = await calendarAccess(db, userId, ev.calendarId);
     if (!access) throw new Error(`Event ${id} not found`);
     if (!canEditCalendar(access)) throw new Error('You do not have permission to change this event');
     return ev;
@@ -67,7 +67,7 @@ export function compilePlan(db: DB, userId: string, plan: Plan): Compiled {
     working.set(id, after);
   };
 
-  plan.operations.forEach((op, index) => {
+  for (const [index, op] of plan.operations.entries()) {
     const item: PreviewItem = { index, op: op.op, description: '', destination: '', conflicts: [], error: null };
     items.push(item);
     try {
@@ -99,14 +99,14 @@ export function compilePlan(db: DB, userId: string, plan: Plan): Compiled {
           record(null, ev, ev.id);
           item.destination = cal.name;
           item.description = `Create “${op.title}” ${describeWhen(ev)}${ev.recurrence ? ' (repeating)' : ''}`;
-          item.conflicts = conflictsFor(db, userId, ev, working);
+          item.conflicts = await conflictsFor(db, userId, ev, working);
           break;
         }
         case 'move_event':
         case 'resize_event':
         case 'delete_event':
         case 'set_event_alert': {
-          const ev = loadEvent(op.eventId);
+          const ev = await loadEvent(op.eventId);
           const occ = findOccurrence(ev, op.occurrenceDate);
           const scope: EditScope = op.scope ?? (ev.recurrence ? 'this' : 'all');
           item.destination = calendars.find((c) => c.id === ev.calendarId)?.name ?? '';
@@ -146,7 +146,7 @@ export function compilePlan(db: DB, userId: string, plan: Plan): Compiled {
           record(ev, res.updated, ev.id);
           for (const c of res.created) record(null, c, c.id);
           const moved = res.created[0] ?? res.updated!;
-          item.conflicts = conflictsFor(db, userId, moved, working, occ.originalDate);
+          item.conflicts = await conflictsFor(db, userId, moved, working, occ.originalDate);
           break;
         }
         case 'create_task': {
@@ -165,7 +165,7 @@ export function compilePlan(db: DB, userId: string, plan: Plan): Compiled {
         }
         case 'complete_task':
         case 'set_task_due': {
-          const t = getTask(db, op.taskId);
+          const t = await getTask(db, op.taskId);
           if (!t || t.ownerId !== userId) throw new Error(`Task ${op.taskId} not found`);
           const after: Task = op.op === 'complete_task'
             ? { ...t, completedAt: nowIso() }
@@ -181,7 +181,7 @@ export function compilePlan(db: DB, userId: string, plan: Plan): Compiled {
     } catch (e) {
       item.error = (e as Error).message;
     }
-  });
+  }
   return { items, changes };
 }
 
@@ -195,11 +195,11 @@ function describeOcc(o: Occurrence): string {
 }
 
 /** Timed overlaps with the user's own existing events (warn only; overlap is allowed). */
-function conflictsFor(db: DB, userId: string, ev: CalEvent, working: Map<string, CalEvent | null>, origDate?: string): string[] {
+async function conflictsFor(db: DB, userId: string, ev: CalEvent, working: Map<string, CalEvent | null>, origDate?: string): Promise<string[]> {
   if (ev.allDay) return [];
   const from = ev.startDate;
   const to = addDays(ev.startDate, 1);
-  const base = listEvents(db, userId, from, to).filter((e) => !working.has(e.id) && e.ownerId === userId);
+  const base = (await listEvents(db, userId, from, to)).filter((e) => !working.has(e.id) && e.ownerId === userId);
   const pending = [...working.values()].filter((e): e is CalEvent => !!e);
   const mine = expandEvent(ev, from, to).filter((o) => !origDate || o.originalDate === origDate || !ev.recurrence);
   const out: string[] = [];
@@ -224,9 +224,9 @@ interface UndoEntry {
   afterVersion: number | null;
 }
 
-export function applyChanges(db: DB, userId: string, plan: Plan, source: 'import' | 'assistant') {
-  return tx(db, () => {
-    const compiled = compilePlan(db, userId, plan);
+export async function applyChanges(db: DB, userId: string, plan: Plan, source: 'import' | 'assistant') {
+  return tx(db, async (db) => {
+    const compiled = await compilePlan(db, userId, plan);
     const failed = compiled.items.filter((i) => i.error);
     if (failed.length) throw new HttpError(400, 'Some operations cannot be applied', compiled.items);
     const undo: UndoEntry[] = [];
@@ -234,22 +234,22 @@ export function applyChanges(db: DB, userId: string, plan: Plan, source: 'import
       if (c.type === 'event') {
         const id = (c.after ?? c.before)!.id;
         if (c.after) {
-          writeEvent(db, c.after.ownerId, c.after, !c.before);
-          const v = get<{ version: number }>(db, 'SELECT version FROM events WHERE id = ?', id)!.version;
+          await writeEvent(db, c.after.ownerId, c.after, !c.before);
+          const v = (await get<{ version: number }>(db, 'SELECT version FROM events WHERE id = ?', id))!.version;
           undo.push({ type: 'event', id, before: c.before, afterVersion: v });
         } else {
-          run(db, 'DELETE FROM events WHERE id = ?', id);
+          await run(db, 'DELETE FROM events WHERE id = ?', id);
           undo.push({ type: 'event', id, before: c.before, afterVersion: null });
         }
       } else {
         const t = c.after!;
-        writeTask(db, userId, t, !c.before);
-        const v = get<{ version: number }>(db, 'SELECT version FROM tasks WHERE id = ?', t.id)!.version;
+        await writeTask(db, userId, t, !c.before);
+        const v = (await get<{ version: number }>(db, 'SELECT version FROM tasks WHERE id = ?', t.id))!.version;
         undo.push({ type: 'task', id: t.id, before: c.before, afterVersion: v });
       }
     }
     const id = uid();
-    run(
+    await run(
       db, 'INSERT INTO plan_proposals (id, user_id, source, plan, status, undo, created_at, applied_at) VALUES (?,?,?,?,?,?,?,?)',
       id, userId, source, JSON.stringify(plan), 'applied', JSON.stringify(undo), nowIso(), nowIso(),
     );
@@ -258,9 +258,9 @@ export function applyChanges(db: DB, userId: string, plan: Plan, source: 'import
 }
 
 /** Undo an applied plan. Records edited since are left alone and reported as conflicts. */
-export function undoPlan(db: DB, userId: string, proposalId: string) {
-  return tx(db, () => {
-    const p = get<{ undo: string; status: string }>(db, 'SELECT undo, status FROM plan_proposals WHERE id = ? AND user_id = ?', proposalId, userId);
+export async function undoPlan(db: DB, userId: string, proposalId: string) {
+  return tx(db, async (db) => {
+    const p = await get<{ undo: string; status: string }>(db, 'SELECT undo, status FROM plan_proposals WHERE id = ? AND user_id = ?', proposalId, userId);
     if (!p) throw new HttpError(404, 'Plan not found');
     if (p.status !== 'applied') throw new HttpError(409, 'This plan was already undone');
     const entries = JSON.parse(p.undo) as UndoEntry[];
@@ -268,7 +268,7 @@ export function undoPlan(db: DB, userId: string, proposalId: string) {
     const owners = new Set<string>();
     for (const e of entries.reverse()) {
       const table = e.type === 'event' ? 'events' : 'tasks';
-      const cur = get<{ version: number; owner_id: string }>(db, `SELECT version, owner_id FROM ${table} WHERE id = ?`, e.id);
+      const cur = await get<{ version: number; owner_id: string }>(db, `SELECT version, owner_id FROM ${table} WHERE id = ?`, e.id);
       const unchanged = e.afterVersion === null ? !cur : cur?.version === e.afterVersion;
       const label = (e.before as { title?: string } | null)?.title ?? e.id;
       if (!unchanged) {
@@ -276,50 +276,50 @@ export function undoPlan(db: DB, userId: string, proposalId: string) {
         continue;
       }
       if (e.type === 'event' && cur) {
-        const access = calendarAccess(db, userId, (getEvent(db, e.id) as CalEvent).calendarId);
+        const access = await calendarAccess(db, userId, ((await getEvent(db, e.id)) as CalEvent).calendarId);
         if (!canEditCalendar(access)) { conflicts.push(`No longer allowed to change “${label}”.`); continue; }
       }
       if (cur) owners.add(cur.owner_id);
       if (!e.before) {
-        run(db, `DELETE FROM ${table} WHERE id = ?`, e.id);
+        await run(db, `DELETE FROM ${table} WHERE id = ?`, e.id);
       } else if (e.type === 'event') {
         const before = e.before as CalEvent;
         owners.add(before.ownerId);
-        writeEvent(db, before.ownerId, before, !cur);
+        await writeEvent(db, before.ownerId, before, !cur);
       } else {
-        writeTask(db, userId, e.before as Task, !cur);
+        await writeTask(db, userId, e.before as Task, !cur);
       }
     }
-    run(db, "UPDATE plan_proposals SET status = 'undone' WHERE id = ?", proposalId);
+    await run(db, "UPDATE plan_proposals SET status = 'undone' WHERE id = ?", proposalId);
     return { conflicts, owners };
   });
 }
 
-export function writeTask(db: DB, ownerId: string, t: Task, isNew: boolean) {
+export async function writeTask(db: DB, ownerId: string, t: Task, isNew: boolean): Promise<Task> {
   const now = nowIso();
-  const prev = isNew ? null : get<{ completed_at: string | null }>(db, 'SELECT completed_at FROM tasks WHERE id = ?', t.id);
+  const prev = isNew ? null : await get<{ completed_at: string | null }>(db, 'SELECT completed_at FROM tasks WHERE id = ?', t.id);
   const wasDone = !!prev?.completed_at;
   const vals = [
     t.listId, t.title, t.notes, t.priority, t.dueDate, t.dueTime, t.tz,
     t.recurrence ? JSON.stringify(t.recurrence) : null, t.completedAt, JSON.stringify(t.alerts), t.goalId,
   ];
   if (isNew) {
-    run(
+    await run(
       db,
       `INSERT INTO tasks (list_id, title, notes, priority, due_date, due_time, tz, recurrence, completed_at, alerts, goal_id, id, owner_id, version, created_at, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       ...vals, t.id, ownerId, now, now,
     );
   } else {
-    run(
+    await run(
       db,
       `UPDATE tasks SET list_id=?, title=?, notes=?, priority=?, due_date=?, due_time=?, tz=?, recurrence=?, completed_at=?, alerts=?, goal_id=?,
        version = version + 1, updated_at=? WHERE id = ?`,
       ...vals, now, t.id,
     );
   }
-  const saved = rowToTask(get(db, 'SELECT * FROM tasks WHERE id = ?', t.id)!);
-  taskCompletionEffects(db, ownerId, saved, wasDone);
+  const saved = rowToTask((await get(db, 'SELECT * FROM tasks WHERE id = ?', t.id))!);
+  await taskCompletionEffects(db, ownerId, saved, wasDone);
   return saved;
 }
 
@@ -328,29 +328,29 @@ export function writeTask(db: DB, ownerId: string, t: Task, isNew: boolean) {
  * repeating tasks, creates the next occurrence once. Reopening removes that check-in.
  * Scheduling a time block never completes a task; only this transition does.
  */
-function taskCompletionEffects(db: DB, ownerId: string, t: Task, wasDone: boolean) {
+async function taskCompletionEffects(db: DB, ownerId: string, t: Task, wasDone: boolean) {
   const isDone = !!t.completedAt;
   if (isDone === wasDone) return;
   const key = `task:${t.id}`;
   if (t.goalId) {
     if (isDone) {
-      run(
+      await run(
         db,
-        'INSERT OR IGNORE INTO check_ins (id, goal_id, owner_id, date, quantity, reflection, client_key, created_at) VALUES (?,?,?,?,NULL,?,?,?)',
-        uid(), t.goalId, ownerId, localDateOf(db, ownerId, t.completedAt!), `Completed task: ${t.title}`, key, nowIso(),
+        'INSERT INTO check_ins (id, goal_id, owner_id, date, quantity, reflection, client_key, created_at) VALUES (?,?,?,?,NULL,?,?,?) ON CONFLICT (goal_id, client_key) DO NOTHING',
+        uid(), t.goalId, ownerId, await localDateOf(db, ownerId, t.completedAt!), `Completed task: ${t.title}`, key, nowIso(),
       );
     } else {
-      run(db, 'DELETE FROM check_ins WHERE goal_id = ? AND client_key = ?', t.goalId, key);
+      await run(db, 'DELETE FROM check_ins WHERE goal_id = ? AND client_key = ?', t.goalId, key);
     }
   }
   if (isDone && t.recurrence && t.dueDate) {
     const next = occurrenceDates(t.dueDate, t.recurrence, addDays(t.dueDate, 1), addDays(t.dueDate, 800))[0];
     if (next) {
       const nextId = `${t.id.slice(0, 40)}~${next}`;
-      if (!get(db, 'SELECT 1 FROM tasks WHERE id = ?', nextId)) {
+      if (!(await get(db, 'SELECT 1 AS x FROM tasks WHERE id = ?', nextId))) {
         const rule = t.recurrence.count ? { ...t.recurrence, count: t.recurrence.count - 1 } : t.recurrence;
         if (!rule.count || rule.count > 0) {
-          writeTask(db, ownerId, { ...t, id: nextId, dueDate: next, completedAt: null, recurrence: rule, version: 0 }, true);
+          await writeTask(db, ownerId, { ...t, id: nextId, dueDate: next, completedAt: null, recurrence: rule, version: 0 }, true);
         }
       }
     }
@@ -358,7 +358,7 @@ function taskCompletionEffects(db: DB, ownerId: string, t: Task, wasDone: boolea
 }
 
 /** Check-ins land on the user's local date of completion. */
-function localDateOf(db: DB, userId: string, instant: string): string {
-  const tz = get<{ tz: string }>(db, 'SELECT tz FROM users WHERE id = ?', userId)?.tz ?? 'UTC';
+async function localDateOf(db: DB, userId: string, instant: string): Promise<string> {
+  const tz = (await get<{ tz: string }>(db, 'SELECT tz FROM users WHERE id = ?', userId))?.tz ?? 'UTC';
   return todayIn(tz, new Date(instant));
 }

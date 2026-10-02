@@ -66,7 +66,7 @@
 - 🟡 Missing: password reset, email verification, login rate limiting. **Add these before exposing the app on the public internet.**
 
 ## Reminders & notifications
-- ✅ Server-side planner plus durable SQLite job table:
+- ✅ Server-side planner plus durable Postgres job table:
   - Jobs keyed by a dedupe key, so re-planning never creates duplicates.
   - Rescheduling, deleting, completing, reopening or changing a recurring item updates or cancels its jobs.
   - Expiry, so late jobs are dropped instead of arriving in a flood.
@@ -103,7 +103,10 @@
 - ⏭ Voice input; an authenticated MCP integration.
 
 ## Platform
-- ✅ Relational schema with migrations; JSON export/backup of your own data.
+- ✅ Deploys to Vercel: static site + one Node function for the API + cron (Build Output API). Database is Supabase Postgres, with row-level security on every table so Supabase's public API exposes nothing.
+- 🟡 The Vercel build has been verified locally: the bundled function was run against a Postgres-protocol server. It has **not** yet been deployed to your Vercel project.
+- 🟡 On Vercel Hobby, background push is only as frequent as the cron allows (daily). Use Pro (every minute) or an external scheduler; see README.
+- ✅ Relational schema (PostgreSQL) with migrations; JSON export/backup of your own data.
 - ✅ Offline banner; failed saves roll back with a visible error; editors stay open on failure; note drafts survive errors and reloads.
 - ✅ No secrets in the browser bundle: VAPID private key and API key are server-side only.
 - 🟡 Accessibility:

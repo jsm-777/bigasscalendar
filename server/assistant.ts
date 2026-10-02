@@ -45,14 +45,14 @@ Rules:
 
 export async function draftPlan(db: DB, userId: string, message: string, history: { role: 'user' | 'assistant'; content: string }[]) {
   if (!assistantConfigured()) throw new Error('Assistant is not configured');
-  const me = userProfile(db, userId);
+  const me = await userProfile(db, userId);
   const today = todayIn(me.tz);
-  const calendars = listCalendars(db, userId).filter((c) => !c.archived && (c.access === 'owner' || c.access === 'edit'));
-  const lists = listTaskLists(db, userId);
-  const events = listEvents(db, userId, addDays(today, -7), addDays(today, 45));
+  const calendars = (await listCalendars(db, userId)).filter((c) => !c.archived && (c.access === 'owner' || c.access === 'edit'));
+  const lists = await listTaskLists(db, userId);
+  const events = await listEvents(db, userId, addDays(today, -7), addDays(today, 45));
   const occ = expandAll(events, addDays(today, -7), addDays(today, 45)).slice(0, 300);
-  const tasks = listTasks(db, userId).filter((t) => !t.completedAt).slice(0, 200);
-  const settings = get<{ settings: string }>(db, 'SELECT settings FROM user_settings WHERE user_id = ?', userId);
+  const tasks = (await listTasks(db, userId)).filter((t) => !t.completedAt).slice(0, 200);
+  const settings = await get<{ settings: string }>(db, 'SELECT settings FROM user_settings WHERE user_id = ?', userId);
   const constraints = settings ? (JSON.parse(settings.settings).planningConstraints ?? '') : '';
 
   const context = [
