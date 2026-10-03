@@ -1,7 +1,7 @@
 // Builds a Vercel deployment with the Build Output API (v3):
 //   .vercel/output/static           ← the Vite site (dist/)
-//   .vercel/output/functions/api.func ← the Express API bundled into one Node function
-//   .vercel/output/config.json      ← routes (+ the reminder cron job)
+//   .vercel/output/functions/api.func ← the small sign-in API bundled into one Node function
+//   .vercel/output/config.json      ← routes
 // Docs: https://vercel.com/docs/build-output-api/v3
 import { build } from 'esbuild';
 import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -24,8 +24,6 @@ await build({
   format: 'esm',
   target: 'node22',
   sourcemap: false,
-  // PGlite is only used for local development without DATABASE_URL.
-  external: ['@electric-sql/pglite'],
   banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
   logLevel: 'info',
 });
@@ -34,12 +32,9 @@ writeFileSync(`${fn}/.vc-config.json`, JSON.stringify({
   handler: 'index.mjs',
   launcherType: 'Nodejs',
   shouldAddHelpers: false,
-  maxDuration: 60,
+  maxDuration: 15,
 }, null, 2));
 
-// Vercel Hobby only allows cron jobs that run once a day; Pro allows every minute.
-// Set CRON_SCHEDULE in Vercel (e.g. "* * * * *" on Pro). See README → Deploying to Vercel.
-const schedule = process.env.CRON_SCHEDULE || '0 13 * * *';
 writeFileSync(`${out}/config.json`, JSON.stringify({
   version: 3,
   routes: [
@@ -47,6 +42,5 @@ writeFileSync(`${out}/config.json`, JSON.stringify({
     { handle: 'filesystem' },
     { src: '^/(?!api(?:/|$)).*$', dest: '/index.html' },
   ],
-  crons: [{ path: '/api/cron', schedule }],
 }, null, 2));
-console.log(`Vercel output ready (cron: ${schedule}).`);
+console.log('Vercel output ready.');
