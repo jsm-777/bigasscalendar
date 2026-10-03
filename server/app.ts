@@ -61,6 +61,12 @@ export const CALENDAR_TEMPLATES = [
 
 let lastOpportunisticTick = 0;
 
+/** The very first account can always sign up; after that only with ALLOW_OPEN_SIGNUP or an invite. */
+async function openSignup(db: DB): Promise<boolean> {
+  if (process.env.ALLOW_OPEN_SIGNUP === 'true') return true;
+  return !(await get(db, 'SELECT 1 AS x FROM users LIMIT 1'));
+}
+
 /** `getDb` resolves the shared connection (lazily on serverless cold starts). */
 export function createApp(getDb: () => Promise<DB>) {
   const app = express();
@@ -104,7 +110,7 @@ export function createApp(getDb: () => Promise<DB>) {
     if (body.inviteToken) {
       invite = await get(db, 'SELECT id, inviter_id FROM invitations WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?', sha256(body.inviteToken), nowIso());
       if (!invite) throw new HttpError(400, 'This invitation is invalid or expired');
-    } else if (process.env.ALLOW_OPEN_SIGNUP !== 'true') {
+    } else if (!(await openSignup(db))) {
       throw new HttpError(403, 'Sign-up is by invitation only');
     }
     if (await get(db, 'SELECT 1 AS x FROM users WHERE lower(email) = lower(?)', body.email)) throw new HttpError(409, 'An account with this email already exists');
@@ -134,8 +140,13 @@ export function createApp(getDb: () => Promise<DB>) {
     return { ok: true };
   }));
 
-  app.get('/api/config', h(() => ({
-    openSignup: process.env.ALLOW_OPEN_SIGNUP === 'true',
+  app.get('/api/health', h(async () => {
+    await get(db, 'SELECT 1 AS ok');
+    return { ok: true, database: true, push: pushConfigured(), assistant: assistantConfigured(), cron: !!process.env.CRON_SECRET };
+  }));
+
+  app.get('/api/config', h(async () => ({
+    openSignup: await openSignup(db),
     pushConfigured: pushConfigured(),
     vapidPublicKey: process.env.VAPID_PUBLIC_KEY || null,
     assistant: assistantConfigured(),
@@ -555,6 +566,12 @@ export function createApp(getDb: () => Promise<DB>) {
       return;
     }
     console.error(err);
+    const msg = (err as Error)?.message ?? '';
+    // Configuration problems are safe and useful to show; other errors stay generic.
+    if (/DATABASE_URL/.test(msg)) {
+      res.status(503).json({ error: msg });
+      return;
+    }
     res.status(500).json({ error: 'Something went wrong on the server' });
   });
 

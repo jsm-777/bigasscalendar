@@ -111,7 +111,7 @@ function Tasks() {
       {overdue.length > 0 && (
         <>
           <h4 className="sb-sub warn-text">Overdue</h4>
-          <ul className="sb-list">{overdue.map((t) => <TaskRow key={t.id} t={t} label={t.dueDate!.slice(5)} />)}</ul>
+          <ul className="sb-list">{overdue.map((t) => <TaskRow key={t.id} t={t} label={`${MONTH_NAMES[Number(t.dueDate!.slice(5, 7)) - 1].slice(0, 3)} ${Number(t.dueDate!.slice(8))}`} />)}</ul>
         </>
       )}
       {due.length === 0 && overdue.length === 0 && <p className="quiet">No to-dos due {d === s.today ? 'today' : 'this day'}.</p>}
@@ -150,10 +150,15 @@ function Reminders() {
         <ul className="sb-list">
           {upcoming.map((u) => {
             const when = new Date(u.fireAt);
+            const day = when.toLocaleDateString('en-US', { timeZone: s.tz, weekday: 'short' });
+            const at = when.toLocaleTimeString('en-US', { timeZone: s.tz, hour: 'numeric', minute: '2-digit' }).replace(':00', '').replace(' AM', 'a').replace(' PM', 'p');
             return (
               <li key={u.id} className="sb-item static">
-                <span className="sb-time">{when.toLocaleDateString(undefined, { timeZone: s.tz, weekday: 'short' })} {when.toLocaleTimeString(undefined, { timeZone: s.tz, hour: 'numeric', minute: '2-digit' })}</span>
-                <span className="sb-text">{u.title}</span>
+                <span className="sb-time">{day}</span>
+                <span className="sb-text">
+                  {u.title}
+                  <span className="muted small"> · {u.body || 'Reminder'} · alert {at}</span>
+                </span>
               </li>
             );
           })}

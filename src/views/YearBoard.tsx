@@ -6,9 +6,8 @@ import { moonQuarters, MOON_SYMBOL, type MoonQuarter } from '../../shared/moon.t
 import { DRAG_MIME, hiddenCounts, layoutRow } from './layout.ts';
 import { Chip } from './Chip.tsx';
 import { useEventActions } from '../actions.tsx';
+import { useCoarsePointer, useIsPhone } from '../hooks.ts';
 
-const MONTH_COL = 92;
-const LANE_H = 17;
 
 interface Props {
   occs: Occurrence[];
@@ -23,6 +22,10 @@ interface Props {
 export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }: Props) {
   const s = useStore();
   const actions = useEventActions();
+  const phone = useIsPhone();
+  const coarse = useCoarsePointer();
+  const MONTH_COL = phone ? 56 : 92;
+  const LANE_H = coarse ? 20 : 17;
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(1200);
 
@@ -35,9 +38,17 @@ export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }
     return () => ro.disconnect();
   }, []);
 
-  const notesW = showNotes ? (notesOpen ? 168 : 30) : 0;
-  // Fit mode divides the available width; it never goes below a legible minimum and scrolls instead.
-  const dayW = fit ? Math.max(30, Math.floor((width - MONTH_COL - notesW - 2) / 31)) : 76;
+  // Fit mode divides the available width among 31 days. If the open notes column would squeeze
+  // days below a legible width it collapses to its narrow strip; if even that cannot fit (phones),
+  // days keep a comfortable width and the board scrolls instead of shrinking text.
+  const MIN_FIT = 22;
+  const avail = width - MONTH_COL - 2;
+  let notesW = showNotes ? (notesOpen ? 168 : 30) : 0;
+  if (fit && showNotes && notesOpen && (avail - notesW) / 31 < 34) notesW = 30;
+  const fitW = Math.floor((avail - notesW) / 31);
+  const dayW = fit ? (fitW >= MIN_FIT ? fitW : phone ? 44 : MIN_FIT) : 76;
+  const notesCollapsed = showNotes && notesW === 30;
+  const narrow = dayW < 48;
   const maxLanes = fit ? 3 : 5;
 
   const showMoon = s.me.settings.showMoon !== false;
@@ -90,17 +101,17 @@ export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }
   };
 
   const gridCols = `${MONTH_COL}px repeat(31, ${dayW}px)${showNotes ? ` ${notesW}px` : ''}`;
-  const rowH = 16 + maxLanes * LANE_H + 14;
+  const rowH = 16 + maxLanes * LANE_H + 15;
 
   return (
     <div className="year-wrap" ref={wrapRef} data-pane={label ?? 'main'}>
-      <div className="year-board" role="grid" aria-label={`Year board ${MONTH_NAMES[Number(s.range.months[0].slice(5)) - 1]} ${s.range.months[0].slice(0, 4)} to ${MONTH_NAMES[Number(s.range.months[11].slice(5)) - 1]} ${s.range.months[11].slice(0, 4)}${label ? `, ${label}` : ''}`} style={{ ['--day-w' as string]: `${dayW}px`, width: MONTH_COL + 31 * dayW + notesW }}>
+      <div className={`year-board ${narrow ? 'narrow' : ''}`} role="grid" aria-label={`Year board ${MONTH_NAMES[Number(s.range.months[0].slice(5)) - 1]} ${s.range.months[0].slice(0, 4)} to ${MONTH_NAMES[Number(s.range.months[11].slice(5)) - 1]} ${s.range.months[11].slice(0, 4)}${label ? `, ${label}` : ''}`} style={{ ['--day-w' as string]: `${dayW}px`, width: MONTH_COL + 31 * dayW + notesW }}>
         <div className="yb-head" role="row" style={{ gridTemplateColumns: gridCols }}>
           <div className="yb-corner" role="columnheader">{label ?? ''}</div>
           {Array.from({ length: 31 }, (_, i) => (
             <div key={i} className={`yb-daynum ${(i + 1) % 7 === 0 ? 'group-line' : ''}`} role="columnheader">{i + 1}</div>
           ))}
-          {showNotes && <div className="yb-notes-head" role="columnheader">{notesOpen ? 'Notes' : '✎'}</div>}
+          {showNotes && <div className="yb-notes-head" role="columnheader" title={notesCollapsed && notesOpen ? 'Not enough room: notes are collapsed. Use Detail or hide the dashboard to show them.' : undefined}>{notesCollapsed ? '✎' : 'Notes'}</div>}
         </div>
         {s.range.months.map((mk, rowIndex) => {
           const [y, m] = mk.split('-').map(Number);
@@ -111,9 +122,9 @@ export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }
           const note = monthNotes.get(mk);
           const quarterRow = rowIndex % 3 === 2;
           return (
-            <div key={mk} className={`yb-row ${quarterRow ? 'quarter-end' : ''} ${m === 1 ? 'year-start' : ''}`} role="row" style={{ gridTemplateColumns: gridCols, gridTemplateRows: `16px repeat(${maxLanes}, ${LANE_H}px) 14px`, height: rowH }}>
+            <div key={mk} className={`yb-row ${quarterRow ? 'quarter-end' : ''} ${m === 1 ? 'year-start' : ''}`} role="row" style={{ gridTemplateColumns: gridCols, gridTemplateRows: `16px repeat(${maxLanes}, ${LANE_H}px) 15px`, height: rowH }}>
               <div className="yb-month" role="rowheader" style={{ gridRow: '1 / -1' }}>
-                <span className="yb-month-name">{MONTH_NAMES[m - 1]}</span>
+                <span className="yb-month-name">{phone ? MONTH_NAMES[m - 1].slice(0, 3) : MONTH_NAMES[m - 1]}</span>
                 {(m === 1 || rowIndex === 0) && <span className="yb-year">{y}</span>}
               </div>
               {Array.from({ length: 31 }, (_, i) => {
@@ -139,7 +150,10 @@ export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }
                     aria-label={`${formatLongDate(date)}${isToday ? ', today' : ''}${count ? `, ${count} event${count === 1 ? '' : 's'}` : ''}${q ? `, ${q.name} at ${q.localTime}` : ''}`}
                     className={`yb-cell ${wd >= 6 ? 'weekend' : ''} ${isToday ? 'today' : ''} ${isSel ? 'selected' : ''} ${wd === 7 ? 'week-end-line' : ''}`}
                     style={{ gridColumn: col, gridRow: '1 / -1' }}
-                    onClick={() => s.setSelected(date)}
+                    onClick={() => {
+                      s.setSelected(date);
+                      if (phone) s.showDayPanel();
+                    }}
                     onDoubleClick={() => s.setDialog({ type: 'event', defaults: { startDate: date } })}
                     onKeyDown={(e) => onCellKey(e, date)}
                     onDragOver={(e) => {
@@ -153,6 +167,7 @@ export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }
                   >
                     <span className="yb-wd">{WEEKDAY_SHORT[wd - 1].slice(0, 2)}</span>
                     {q && <span className={`yb-moon q${q.quarter}`} title={`${q.name} · ${q.localTime}`} aria-hidden>{MOON_SYMBOL[q.name]}</span>}
+                    {isToday && <span className="sr-only">Today</span>}
                   </div>
                 );
               })}
@@ -161,6 +176,7 @@ export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }
                   key={sg.occ.key + mk}
                   occ={sg.occ}
                   compact
+                  narrow={narrow}
                   showPerson={showPerson}
                   continuesBefore={sg.continuesBefore}
                   continuesAfter={sg.continuesAfter}
@@ -176,8 +192,8 @@ export function YearBoard({ occs, showNotes, showPerson, fit, notesOpen, label }
                 </button>
               ))}
               {showNotes && (
-                <button className={`yb-note ${notesOpen ? '' : 'collapsed'}`} style={{ gridColumn: 33, gridRow: '1 / -1' }} onClick={() => s.setDialog({ type: 'monthNotes', month: mk })} aria-label={`${MONTH_NAMES[m - 1]} notes${note?.body ? `: ${note.body.slice(0, 80)}` : ', empty'}`}>
-                  {notesOpen ? (note?.body ? <span className="yb-note-text">{note.body}</span> : <span className="yb-note-empty">Add note</span>) : note?.body ? '•' : ''}
+                <button className={`yb-note ${notesCollapsed ? 'collapsed' : ''}`} style={{ gridColumn: 33, gridRow: '1 / -1' }} onClick={() => s.setDialog({ type: 'monthNotes', month: mk })} aria-label={`${MONTH_NAMES[m - 1]} notes${note?.body ? `: ${note.body.slice(0, 80)}` : ', empty'}`}>
+                  {!notesCollapsed ? (note?.body ? <span className="yb-note-text">{note.body}</span> : <span className="yb-note-empty">Add note</span>) : note?.body ? '•' : '+'}
                 </button>
               )}
             </div>

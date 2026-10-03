@@ -14,12 +14,14 @@ interface ChipProps {
   spanDays?: number;
   segmentStartDate?: string;
   compact?: boolean;
+  /** Very narrow cells: title only, no time, icons or dot. */
+  narrow?: boolean;
   showPerson?: boolean;
   /** Days to move per Alt+Arrow (Up/Down). */
   verticalStep?: number;
 }
 
-export function Chip({ occ, style, continuesBefore, continuesAfter, spanDays, segmentStartDate, compact, showPerson, verticalStep = 7 }: ChipProps) {
+export function Chip({ occ, style, continuesBefore, continuesAfter, spanDays, segmentStartDate, compact, narrow, showPerson, verticalStep = 7 }: ChipProps) {
   const s = useStore();
   const actions = useEventActions();
   const cal = s.calendarsById.get(occ.calendarId);
@@ -67,7 +69,7 @@ export function Chip({ occ, style, continuesBefore, continuesAfter, spanDays, se
   const label = `${occ.title}${person ? `, ${person}` : ''}, ${occ.allDay ? 'all day' : time}${occ.recurring ? ', repeats' : ''}${cal ? `, ${cal.name}` : ''}${editable ? '. Alt+arrow keys move it.' : ''}`;
   return (
     <div
-      className={`chip ${occ.allDay || occ.startDate !== occ.endDate ? 'span' : 'timed'} ${continuesBefore ? 'cont-before' : ''} ${continuesAfter ? 'cont-after' : ''} ${compact ? 'compact' : ''} ${occ.redacted ? 'busy' : ''}`}
+      className={`chip ${occ.allDay || occ.startDate !== occ.endDate || narrow ? 'span' : 'timed'} ${continuesBefore ? 'cont-before' : ''} ${continuesAfter ? 'cont-after' : ''} ${compact ? 'compact' : ''} ${narrow ? 'narrow' : ''} ${occ.redacted ? 'busy' : ''}`}
       style={{ ...style, ['--c' as string]: color }}
       draggable={editable}
       onDragStart={onDragStart}
@@ -82,12 +84,11 @@ export function Chip({ occ, style, continuesBefore, continuesAfter, spanDays, se
       aria-label={label}
       title={label}
     >
-      {continuesBefore && <span className="cont-mark" aria-hidden>‹</span>}
+      {continuesBefore && !narrow && <span className="cont-mark" aria-hidden>‹</span>}
       {person && <span className="person-tag" aria-hidden>{person.slice(0, 1)}</span>}
-      {time && <span className="chip-time">{time}</span>}
       <span className="chip-title">{occ.title}</span>
-      {occ.recurring && <span className="chip-icon" aria-hidden>↻</span>}
-      {continuesAfter && <span className="cont-mark right" aria-hidden>›</span>}
+      {time && !narrow && <span className="chip-time">{time}</span>}
+      {continuesAfter && !narrow && <span className="cont-mark right" aria-hidden>›</span>}
     </div>
   );
 }

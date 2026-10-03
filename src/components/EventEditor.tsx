@@ -201,7 +201,14 @@ export function EventEditor({ event, occurrence, defaults, onClose }: { event?: 
       <label>
         Calendar
         {writable.length === 0 ? (
-          <span className="error-text small">No calendars yet. <button className="link" onClick={() => s.setDialog({ type: 'settings', tab: 'calendars' })}>Add one</button></span>
+          <span className="no-cal">
+            <span className="muted small">You don't have a calendar yet.</span>
+            <button type="button" className="btn small" onClick={async () => {
+              const c = await s.saveCalendar({ id: newId(), ownerId: s.me.user.id, name: 'Personal', color: '#3b82f6', archived: false, visible: true, shareLevel: 'private', access: 'owner', version: 0 }, true);
+              if (c) set({ calendarId: c.id });
+            }}>Create “Personal” calendar</button>
+            <button type="button" className="link small" onClick={() => s.setDialog({ type: 'settings', tab: 'calendars' })}>More options</button>
+          </span>
         ) : (
           <select value={f.calendarId} onChange={(e) => set({ calendarId: e.target.value })} disabled={!!event && s.calendarsById.get(event.calendarId)?.ownerId !== s.me.user.id && false}>
             {writable.filter((c) => !event || c.ownerId === event.ownerId).map((c) => (

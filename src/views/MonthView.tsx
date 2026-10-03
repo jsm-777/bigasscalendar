@@ -6,12 +6,14 @@ import { DRAG_MIME, hiddenCounts, layoutRow } from './layout.ts';
 import { Chip } from './Chip.tsx';
 import { useEventActions } from '../actions.tsx';
 import { moonQuarters, MOON_SYMBOL } from '../../shared/moon.ts';
+import { useIsPhone } from '../hooks.ts';
 
 const LANES = 4;
 
 export function MonthView({ occs, showPerson, label }: { occs: Occurrence[]; showPerson?: boolean; label?: string }) {
   const s = useStore();
   const actions = useEventActions();
+  const phone = useIsPhone();
   const weekStart = s.me.settings.weekStartsOn ?? 7;
   const first = startOfMonth(s.selected);
   const gridStart = startOfWeek(first, weekStart);
@@ -52,7 +54,10 @@ export function MonthView({ occs, showPerson, label }: { occs: Occurrence[]; sho
                   role="gridcell"
                   tabIndex={d === s.selected ? 0 : -1}
                   aria-label={formatLongDate(d)}
-                  onClick={() => s.setSelected(d)}
+                  onClick={() => {
+                    s.setSelected(d);
+                    if (phone) s.showDayPanel();
+                  }}
                   onDoubleClick={() => s.setDialog({ type: 'event', defaults: { startDate: d } })}
                   onKeyDown={(e) => e.key === 'Enter' && s.setDialog({ type: 'event', defaults: { startDate: d } })}
                   onDragOver={(e) => e.dataTransfer.types.includes(DRAG_MIME) && e.preventDefault()}
@@ -64,11 +69,11 @@ export function MonthView({ occs, showPerson, label }: { occs: Occurrence[]; sho
               );
             })}
             {segs.filter((sg) => sg.lane < LANES).map((sg) => (
-              <Chip key={sg.occ.key} occ={sg.occ} showPerson={showPerson} continuesBefore={sg.continuesBefore} continuesAfter={sg.continuesAfter} segmentStartDate={days[sg.start]} spanDays={sg.end - sg.start + 1} style={{ gridColumn: `${sg.start + 1} / ${sg.end + 2}`, gridRow: sg.lane + 2 }} />
+              <Chip key={sg.occ.key} occ={sg.occ} narrow={phone && sg.end === sg.start} showPerson={showPerson} continuesBefore={sg.continuesBefore} continuesAfter={sg.continuesAfter} segmentStartDate={days[sg.start]} spanDays={sg.end - sg.start + 1} style={{ gridColumn: `${sg.start + 1} / ${sg.end + 2}`, gridRow: sg.lane + 2 }} />
             ))}
             {hidden.map((n, i) => n > 0 && (
               <button key={i} className="mv-more" style={{ gridColumn: i + 1, gridRow: LANES + 2 }} onClick={() => { s.setSelected(days[i]); s.setDialog({ type: 'dayList', date: days[i] }); }}>
-                +{n} more
+                +{n}<span className="mv-more-word"> more</span>
               </button>
             ))}
           </div>

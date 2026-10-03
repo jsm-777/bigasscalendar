@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useStore } from '../store.tsx';
 import type { Occurrence } from '../../shared/types.ts';
-import { addDays, startOfWeek } from '../../shared/dates.ts';
+import { addDays } from '../../shared/dates.ts';
+import { useIsPhone, weekSpan } from '../hooks.ts';
+import { weekStartFor } from '../components/Header.tsx';
+import type { View } from '../store.tsx';
 import { YearBoard } from './YearBoard.tsx';
 import { MonthView } from './MonthView.tsx';
 import { TimeGrid } from './TimeGrid.tsx';
@@ -31,11 +34,18 @@ export function BoardArea() {
   const [fit, setFit] = usePersisted('bac-fit', true);
   const [notesOpen, setNotesOpen] = usePersisted('bac-notes-col', true);
   const partner = s.me.partner;
+  const phone = useIsPhone();
+  // Together layout per view: the year board is clearest overlaid (side by side only fits half a
+  // month per person); time grids compare best side by side.
+  const [layoutByView, setLayoutByView] = usePersisted<Record<View, 'side' | 'overlay'>>('bac-together-layout', { year: 'overlay', month: 'overlay', week: 'side', day: 'side' });
+  const together = layoutByView[s.view];
+  const setTogether = (m: 'side' | 'overlay') => setLayoutByView({ ...layoutByView, [s.view]: m });
 
   const renderView = (occs: Occurrence[], opts: { label?: string; own: boolean; showPerson?: boolean }) => {
     if (s.view === 'year') return <YearBoard occs={occs} showNotes={opts.own} showPerson={opts.showPerson} fit={fit} notesOpen={notesOpen} label={opts.label} />;
     if (s.view === 'month') return <MonthView occs={occs} showPerson={opts.showPerson} label={opts.label} />;
-    const days = s.view === 'day' ? [s.selected] : Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(s.selected, s.me.settings.weekStartsOn ?? 7), i));
+    const start = weekStartFor(s.selected, phone, s.me.settings.weekStartsOn ?? 7);
+    const days = s.view === 'day' ? [s.selected] : Array.from({ length: weekSpan(phone) }, (_, i) => addDays(start, i));
     return <TimeGrid days={days} occs={occs} showPerson={opts.showPerson} label={opts.label} />;
   };
 
@@ -44,7 +54,7 @@ export function BoardArea() {
 
   let content: ReactNode;
   if (s.workspace === 'together' && partner) {
-    content = s.togetherMode === 'overlay'
+    content = together === 'overlay' || phone
       ? renderView(s.allOccurrences, { own: true, showPerson: true })
       : (
         <SyncedPanes key={s.view}>
@@ -70,14 +80,18 @@ export function BoardArea() {
               <button className={!fit ? 'on' : ''} aria-pressed={!fit} onClick={() => setFit(false)}>Detail</button>
             </div>
             {s.workspace !== 'partner' && (
-              <button className="btn small ghost" aria-pressed={notesOpen} onClick={() => setNotesOpen(!notesOpen)}>{notesOpen ? 'Hide notes column' : 'Show notes column'}</button>
+              <label className="switch">
+                <input type="checkbox" role="switch" checked={notesOpen} onChange={(e) => setNotesOpen(e.target.checked)} />
+                <span className="switch-track" aria-hidden />
+                Notes column
+              </label>
             )}
           </>
         )}
-        {s.workspace === 'together' && partner && (
+        {s.workspace === 'together' && partner && !phone && (
           <div className="seg" role="group" aria-label="Together layout">
-            <button className={s.togetherMode === 'side' ? 'on' : ''} aria-pressed={s.togetherMode === 'side'} onClick={() => s.setTogetherMode('side')}>Side by side</button>
-            <button className={s.togetherMode === 'overlay' ? 'on' : ''} aria-pressed={s.togetherMode === 'overlay'} onClick={() => s.setTogetherMode('overlay')}>Overlay</button>
+            <button className={together === 'side' ? 'on' : ''} aria-pressed={together === 'side'} onClick={() => setTogether('side')}>Side by side</button>
+            <button className={together === 'overlay' ? 'on' : ''} aria-pressed={together === 'overlay'} onClick={() => setTogether('overlay')}>Overlay</button>
           </div>
         )}
         <Legend />

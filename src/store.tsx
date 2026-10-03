@@ -77,6 +77,9 @@ function useStoreValue(config: Config, me: { user: UserProfile; partner: Partner
   const [workspace, setWorkspace] = useState<Workspace>('me');
   const [togetherMode, setTogetherMode] = useState<'side' | 'overlay'>('side');
   const [dialog, setDialog] = useState<Dialog>(null);
+  // Phones: tapping a day asks the shell to open the dashboard drawer for it.
+  const [dayPanelRequest, setDayPanelRequest] = useState(0);
+  const showDayPanel = useCallback(() => setDayPanelRequest((n) => n + 1), []);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [data, setData] = useState<Data>(EMPTY);
   const [loading, setLoading] = useState(true);
@@ -316,6 +319,7 @@ function useStoreValue(config: Config, me: { user: UserProfile; partner: Partner
   const personName = useCallback((ownerId: string) => (ownerId === me.user.id ? me.user.displayName : partner?.id === ownerId ? partner.displayName : 'Unknown'), [me.user, partner]);
 
   return {
+    dayPanelRequest, showDayPanel,
     config, me, reloadMe, tz, today, selected, setSelected, goToday, view, setView, rangeStart, setRangeStart, range,
     loadFrom, loadTo, workspace, setWorkspace, togetherMode, setTogetherMode, dialog, setDialog, toasts, toast,
     setToasts, data, patchData, reload, loading, loadError, online, saveEvents, saveTask, deleteTask, saveCalendar,

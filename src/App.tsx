@@ -3,7 +3,8 @@ import { api, ApiError } from './api.ts';
 import { StoreProvider, useStore, type Config, type Settings } from './store.tsx';
 import type { NotificationPrefs, Partner, UserProfile } from '../shared/types.ts';
 import { AuthScreen } from './components/AuthScreen.tsx';
-import { Header } from './components/Header.tsx';
+import { BottomBar, Header } from './components/Header.tsx';
+import { useIsPhone } from './hooks.ts';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BoardArea } from './views/BoardArea.tsx';
 import { Dialogs } from './components/Dialogs.tsx';
@@ -61,6 +62,7 @@ export function Root() {
 
 function Shell() {
   const s = useStore();
+  const phone = useIsPhone();
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     // On small screens the dashboard is a drawer and the Year board stays the default view.
     if (matchMedia('(max-width: 860px)').matches) return false;
@@ -81,6 +83,11 @@ function Shell() {
     });
   };
   useNotificationPolling();
+  // Phones: tapping a day on the board opens the dashboard for that day.
+  useEffect(() => {
+    if (s.dayPanelRequest && phone) setSidebarOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.dayPanelRequest]);
   useInviteFromUrl();
 
   // Global keyboard shortcuts (ignored while typing).
@@ -114,7 +121,7 @@ function Shell() {
   }, [s]);
 
   return (
-    <div className={`app ${sidebarOpen ? 'with-sidebar' : 'sidebar-closed'}`}>
+    <div className={`app ${sidebarOpen ? 'with-sidebar' : 'sidebar-closed'} ${phone ? 'is-phone' : ''}`}>
       <Header sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} />
       {!s.online && <div className="banner warn" role="status">You are offline. Viewing the last loaded data; changes will fail until you reconnect.</div>}
       {s.loadError && (
@@ -127,6 +134,7 @@ function Shell() {
         {sidebarOpen && <div className="drawer-backdrop" onClick={toggleSidebar} aria-hidden />}
         <Sidebar open={sidebarOpen} onClose={toggleSidebar} />
       </div>
+      {phone && <BottomBar sidebarOpen={sidebarOpen} onToggleSidebar={toggleSidebar} />}
       <Dialogs />
       <Toasts />
     </div>
